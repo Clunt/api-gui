@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>API - GUI</title>
+</head>
+<body>
+  <textarea id="locals" hidden>"JSON String"</textarea>
+  <div id="app" class="app">APP</div>
+  <script>
+    function curl(API, OPTION, app) {
+      OPTION = OPTION || {};
+      function formatApi(api) {
+        if (!api) return ['', ''];
+        var i = api.indexOf(':');
+        return [api.slice(i + 1), api.slice(0, i)];
+      }
+      window.onload = function() {
+        (app || document.getElementById('app')).innerHTML = `
+          <form onsubmit="return false" style="padding-left: 0 36px">
+            <label>URL:<select name="api"></select></label>
+            <label>自动更新<input type="checkbox" name="auto" checked></label>
+            <label>Customer:<input type="text" name="url"></label>
+            <label>Method:<select name="method">
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+              <option value="PUT">PUT</option>
+              <option value="DELETE">DELETE</option>
+            </select></label>
+            <label>ContentType:<select name="type">
+              <option value="application/x-www-form-urlencoded">FORM</option>
+              <option value="application/json">JSON</option>
+            </select></label>
+            <table width="86%" style="font-size: 0;">
+              <tr>
+                <td width="36%">
+                  <textarea style="width: 100%" name="data" rows="12"></textarea>
+                  <textarea style="width: 100%" name="desc" rows="12"></textarea>
+                </td>
+                <td width="6%" align="center">=></td>
+                <td width="36%"><textarea style="width: 100%" name="result" rows="24"></textarea></td>
+                <td width="6%" align="center"></td>
+                <td width="16%"><textarea style="width: 100%" name="locals" rows="24"></textarea></td>
+              </tr>
+            </table>
+            <input type="submit" value="提交">
+            <input type="reset" value="重置">
+          </form>
+        `;
+        function getResult(result) {
+          var scheme = OPTION.scheme;
+          if (!scheme) return result;
+          var data = result;
+          scheme.forEach(key => {
+            data = data[key];
+          });
+          return data;
+        }
+        async function submit(event) {
+          var api = document.querySelector('[name=api]').value;
+          var url = document.querySelector('[name=url]').value;
+          var type = document.querySelector('[name=type]').value;
+          var method = document.querySelector('[name=method]').value;
+          if (!url) return false;
+          try {
+            var data = JSON.parse(document.querySelector('[name=data]').value) || {};
+            if (API[api] && API[api].serial) {
+              var serial = API[api].serial;
+              for (var i = 0; i < serial.length; i++) {
+                var serialResult = await fs(serial[i][0], serial[i][1]);
+                var serialData = getResult(serialResult);
+                try {
+                  var appendData = serial[i][2];
+                  if (typeof appendData === 'function') {
+                    appendData(data, serialData);
+                  } else {
+                    Object.keys(appendData).forEach(key => {
+                      var value = appendData[key];
+                      if (Array.isArray(value)) {
+                        data[key] = serialData;
+                        for (var i = 0; i < value.length; i++) {
+                          data[key] = data[key][value[i]];
+                        }
+                      } else {
+                        data[key] = serialData[key];
+                      }
+                    });
+                  }
+                } catch (e) {
+                  throw '预处理请求出错' + beautify(serialResult);
+                }
+              }
+            }
+            console.log([method, url, type, 'data:'].join(' ; '));
+            console.log(beautify(data));
+            document.querySelector('[name=result]').value = 'LOADING...';
+            var result = await fs(url, { method: method, contentType: type, data: data });
+            document.querySelector('[name=result]').value = beautify(result);
+          } catch(e) {
+            console.log(e);
+            document.querySelector('[name=result]').value = 'ERROR';
+          }
+        }
+        document.querySelector('[name=api]').innerHTML = ((api) => {
+          var html = '<option value="">自定义</option>';
+          Object.keys(api).forEach((key) => {
+            html += `<option value="${key}" ${api[key].default ? 'selected' : ''}>${
+              api[key].title || key
+            }</option>`
+          });
+          return html;
+        })(API)
+        document.querySelector('form').onsubmit = (event) => {
+          submit(event);
+          return false;
+        };
+        document.querySelector('[name=data]').onkeydown = (event) => {
+          if (event.metaKey && event.which === 13) document.querySelector('input[type=submit]').click();
+        };
+        document.querySelector('[name=api]').onchange = function(event) {
+          if (!document.querySelector('[name=auto]').checked) return;
+          updateData();
+        };
+        try {
+        document.querySelector('[name=locals]').value = beautify(JSON.parse(document.querySelector('#locals').value));
+        } catch(e) {}
+        function updateData() {
+          var value = document.querySelector('[name=api]').value;
+          var api = API[value] || {};
+          var format = formatApi(value);
+          document.querySelector('[name=url]').value = format[0] || '';
+          document.querySelector('[name=method]').value = format[1] || 'GET';
+          document.querySelector('[name=data]').value = beautify(api.data || {});
+          document.querySelector('[name=desc]').value = api.desc || '';
+          document.querySelector('[name=type]').value = api.type || 'application/x-www-form-urlencoded';
+        }
+        updateData();
+      };
+      function fs(url, option) {
+        var method = (option.method || 'GET').toUpperCase();
+        var contentType = (option.contentType || 'application/x-www-form-urlencoded').toLowerCase();
+        var body = ((data, contentType) => {
+          data = data || {};
+          if (OPTION.common && OPTION.common.data) {
+            data = Object.assign(data, OPTION.common.data);
+          }
+          if (method === 'GET') return;
+          if (contentType === 'application/json') return JSON.stringify(data);
+          if (contentType && contentType !== 'application/x-www-form-urlencoded') return;
+          var searchParams = new URLSearchParams;
+          Object.keys(data).forEach(key => {
+            var datum = data[key];
+            if (typeof datum !== 'object') return searchParams.append(key, datum);
+            if (!Array.isArray(datum)) return;
+            datum.forEach((datum, i) => {
+              if (typeof datum === 'object') return;
+              searchParams.append(`${key}[]`, datum);
+            });
+          });
+          return searchParams.toString();
+        })(option.data, contentType);
+        url = ((method, url, data) => {
+          if (method !== 'GET') return url;
+          url = new URL(url, window.location.href.replace(/\/$/, ''));
+          data = data || {};
+          Object.keys(data).forEach(key => {
+            var datum = data[key];
+            if (typeof datum !== 'object') return url.searchParams.append(key, datum);
+            if (!Array.isArray(datum)) return;
+            datum.forEach((datum, i) => {
+              if (typeof datum === 'object') return;
+              url.searchParams.append(`${key}[]`, datum);
+            });
+          });
+          return url.toString()
+        })(method, url, option.data);
+        var headers = {
+          Accept: 'application/json',
+          'Content-Type': contentType
+        };
+        if (OPTION.common && OPTION.common.header) {
+          headers = Object.assign(headers, OPTION.common.header);
+        }
+        return fetch(url, {
+          method: method,
+          body: body,
+          cache: 'no-cache',
+          headers: headers,
+          credentials: 'same-origin',
+          mode: 'cors'
+        }).then(response => {
+          var contentType = response.headers.get('content-type');
+          if (contentType.indexOf('application/json') > -1) {
+            return response.json();
+          } else {
+            return response.text();
+          }
+        });
+      }
+      function beautify($value,$replacer,$space,$limit){var rx_escapable=/[\\\"\u0000-\u001f\u007f-\u009f\u00ad\u0600-\u0604\u070f\u17b4\u17b5\u200c-\u200f\u2028-\u202f\u2060-\u206f\ufeff\ufff0-\uffff]/g;var gap,indent,meta={'\b':'\\b','\t':'\\t','\n':'\\n','\f':'\\f','\r':'\\r','"':'\\"','\\':'\\\\'},rep;function quote(string){rx_escapable.lastIndex=0;return rx_escapable.test(string)?'"'+string.replace(rx_escapable,function(a){var c=meta[a];return typeof c==='string'?c:'\\u'+('0000'+a.charCodeAt(0).toString(16)).slice(-4)})+'"':'"'+string+'"'}function str(key,holder,limit){var i,k,v,length,mind=gap,partial,value=holder[key];if(value&&typeof value==='object'&&typeof value.toJSON==='function'){value=value.toJSON(key)}if(typeof rep==='function'){value=rep.call(holder,key,value)}switch(typeof value){case'string':return quote(value);case'number':return isFinite(value)?String(value):'null';case'boolean':case'null':return String(value);case'object':if(!value){return'null'}gap+=indent;partial=[];if(Object.prototype.toString.apply(value)==='[object Array]'){length=value.length;for(i=0;i<length;i+=1){partial[i]=str(i,value,limit)||'null'}v=partial.length===0?'[]':gap?(gap.length+partial.join(', ').length+4>limit?'[\n'+gap+partial.join(',\n'+gap)+'\n'+mind+']':'[ '+partial.join(', ')+' ]'):'['+partial.join(',')+']';gap=mind;return v}if(rep&&typeof rep==='object'){length=rep.length;for(i=0;i<length;i+=1){if(typeof rep[i]==='string'){k=rep[i];v=str(k,value,limit);if(v){partial.push(quote(k)+(gap?': ':':')+v)}}}}else{for(k in value){if(Object.prototype.hasOwnProperty.call(value,k)){v=str(k,value,limit);if(v){partial.push(quote(k)+(gap?': ':':')+v)}}}}v=partial.length===0?'{}':gap?(gap.length+partial.join(', ').length+4>limit?'{\n'+gap+partial.join(',\n'+gap)+'\n'+mind+'}':'{ '+partial.join(', ')+' }'):'{'+partial.join(',')+'}';gap=mind;return v}}function beautify(value,replacer,space,limit){var i;gap='';indent='';if(!limit)limit=0;if(typeof limit!=="number")throw new Error("beaufifier: limit must be a number");if(typeof space==='number'){for(i=0;i<space;i+=1){indent+=' '}}else if(typeof space==='string'){indent=space}rep=replacer;if(replacer&&typeof replacer!=='function'&&(typeof replacer!=='object'||typeof replacer.length!=='number')){throw new Error('beautifier: wrong replacer parameter')}return str('',{'':value},limit)}$replacer=$replacer||null;$space=$space||2;$limit=$limit||50;return beautify($value,$replacer,$space,$limit)}
+    }
+  </script>
+  <script>
+    curl({
+      'POST:api/auth/signin': {
+        default: true,
+        title: '登录',
+        type: 'application/json',
+        serial: [
+          [ 'api/todo', { method: 'GET', data: { q: 'value' } }, { datum: true } ],
+          [
+            'api/auth', { method: 'POST' }, (data, result) => {
+              const encrypt = new JSEncrypt();
+              encrypt.setPublicKey(result.key);
+              data.password = encrypt.encrypt(data.password);
+            }
+          ],
+        ],
+        data: {
+          email: '1@t.cn',
+          password: '123123'
+        }
+      }
+    }, {
+      scheme: [2], // keys
+      common: {
+        header: {
+          'X-CSRF-TOKEN': '<%= csrf_token %>'
+        },
+        data: {}
+      }
+    }, document.querySelector('#app'));
+  </script>
+</body>
+</html>
